@@ -1,6 +1,6 @@
 classdef UserInterface < handle
 % USERINTERFACE - Wrapper class that contains PsychToolbox functions. Main
-% script 'Main_SSRT.m' works by using functions in this class.
+% script 'Main_SSRT.m' works primarily by using functions in this class.
     
     properties (GetAccess=private)
         % Settings (initialized once by main script, never change during
@@ -18,6 +18,10 @@ classdef UserInterface < handle
         % Images
         arrow_tex_left;
         arrow_tex_right;
+        arrow_tex_up;
+        lr_arrow_rect;
+        up_arrow_rect;
+        
         
         % Sound parameters
         snd_stopBeep;
@@ -25,6 +29,7 @@ classdef UserInterface < handle
         snd_repetitions;
         snd_startCue;
         snd_waitForDeviceStart;
+        snd_latency;
     end
     
     properties(Constant)
@@ -92,37 +97,78 @@ classdef UserInterface < handle
             % Should we wait for the device to really start (1 = yes)
             % INFO: See help PsychPortAudio
             obj.snd_waitForDeviceStart = 1;
+            
+            % Adding a small sound latency makes the beginning of the sound
+            % cleaner. If this is set to 0, sound card may attempt to
+            % start playing the sound before everything is actually ready.
+            % Setting this to zero seems to work fine on at least one 
+            % machine, otherwise try setting it to 0.015. Always make sure 
+            % to look at the actual timing data (ie. compare SSD_intended 
+            % with SSD_actual) to see how things are working. 
+            % This latency is NOT accounted for when playing the sound in
+            % the experiment - although the actual time when the sound 
+            % starts playing is used to calculate SSD_actual.
+            obj.snd_latency = 0;
 
             % Open Psych-Audio port, with the follow arguements
             % (1) [] = default snd device
             % (2) 1 = snd playback only
-            % (3) 1 = default level of latency
+            % (3) [] = default level of latency
             % (4) Requested frequency in samples per second
-            % (5) 2 = stereo putput
-            obj.snd_pahandle = PsychPortAudio('Open', [], 1, 1, snd_playbackFreq, snd_nrchannels);
+            % (5) 2 = stereo output
+            % (6) Set latency
+            obj.snd_pahandle = PsychPortAudio('Open', [], 1, [], snd_playbackFreq, snd_nrchannels, [], obj.snd_latency);
 
             % Set the volume to full (change 1 to eg. 0.5 for half volume)
-            PsychPortAudio('Volume', obj.snd_pahandle, 1);
+            volume = 1;
+            PsychPortAudio('Volume', obj.snd_pahandle, volume);
 
             % Make a beep which we will play back to the user
-            obj.snd_stopBeep = MakeBeep(obj.settings.BeepFreq, obj.settings.InhDur, snd_playbackFreq);
-
+            obj.snd_stopBeep = MakeBeep(obj.settings.BeepFreq, obj.settings.StopSignalDur, snd_playbackFreq);
+            
             % Fill the audio playback buffer with the audio data, doubled for stereo
             % presentation
             PsychPortAudio('FillBuffer', obj.snd_pahandle, [obj.snd_stopBeep; obj.snd_stopBeep]);
-
+            
+            if strcmpi(obj.settings.StopSignalType, 'auditory')
+                % Play an initial beep to get the sound card started
+                % (otherwise, you get high latency on the first stop trial)
+                PsychPortAudio('Start', obj.snd_pahandle, obj.snd_repetitions, obj.snd_startCue, obj.snd_waitForDeviceStart);
+                pause(obj.settings.StopSignalDur + 0.010)
+                PsychPortAudio('Stop', obj.snd_pahandle)
+            end
+            
             %---IMAGE SETUP---%
 
-            arrow_img_left = double(imread('Left_Arrow.bmp'));
-            arrow_img_right = double(imread('Right_Arrow.bmp'));
+            arrow_img_left = double(imread('media/Left_Arrow.bmp'));
+            arrow_img_right = double(imread('media/Right_Arrow.bmp'));
+            arrow_img_up = double(imread('media/Up_Arrow.bmp'));
 
             obj.arrow_tex_left = Screen('MakeTexture', obj.window, arrow_img_left);
             obj.arrow_tex_right = Screen('MakeTexture', obj.window, arrow_img_right);
+            obj.arrow_tex_up = Screen('MakeTexture', obj.window, arrow_img_up);
+            
+            [arrow_s1, arrow_s2, ~] = size(arrow_img_left); % arrow_img_right is same size, up arrow has aspect ratio reversed
+            
+            % Get the aspect ratio of the image. We need this to maintain the aspect
+            % ratio of the image. Otherwise, if we don't match the aspect 
+            % ratio the image will appear warped / stretched
+            arrow_aspectRatio = arrow_s2 / arrow_s1;
+            
+            lr_arrow_height = 0.01*obj.settings.ArrowSize*obj.screenXpixels;
+            
+            lr_arrow_width = lr_arrow_height * arrow_aspectRatio;
+            
+            obj.lr_arrow_rect = [0 0 lr_arrow_width lr_arrow_height];
+            obj.up_arrow_rect = [0 0 lr_arrow_height lr_arrow_width]; % Width/height reversed due to 90 deg rotation
+            
+            obj.lr_arrow_rect = CenterRectOnPointd(obj.lr_arrow_rect, obj.screenXpixels / 2, obj.screenYpixels / 2);
+            obj.up_arrow_rect = CenterRectOnPointd(obj.up_arrow_rect, obj.screenXpixels / 2, obj.screenYpixels / 2);
         end
         
         ShowInstructions(obj);
         
-        ShowReadyTimer(obj);
+        TriggerTimestamp = ShowReadyTrigger(obj);
         
         ShowFixation(obj, duration, runningVals);
         
@@ -130,7 +176,7 @@ classdef UserInterface < handle
         
         RunTrial(obj, StopGo, arrowDirection, trialLength, varargin);
         
-        [trials, runningVals] = RunNextTrial(obj, trials, runningVals);
+        [trials, runningVals] = RunNextTrial(obj, trials, settings, runningVals);
         
     end
     
